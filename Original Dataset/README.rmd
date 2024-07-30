@@ -1,2 +1,2 @@
-Original data is from Kaggle:
+Original billionaire data is from Kaggle:
 https://www.kaggle.com/datasets/nelgiriyewithana/billionaires-statistics-dataset/data
