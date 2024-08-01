@@ -1,0 +1,102 @@
+---
+title: "Project EDA"
+author: "Charlie Perez"
+date: "2024-07-29"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+billionaires <- read.csv("Billionaires Statistics Dataset.csv")
+```
+Don't really know how to do EDA / transformations in R tbh
+```{r}
+summary(billionaires)
+```
+Thoughts: drop country latitude/longitude, birthYear, birthMonth, birthDay, date, either industry or category (they are the same) and recode as a categorical instead of a variable, rank (rank is unhelpful and can be extrapolated from finalWorth), drop either source or organization.
+
+Other things can be done later, but these all seem useless. If doing some work on countries, USA will probably skew it, so I'm not sure how useful country info will be in any case.
+
+Thoughts: 
+
+MLR: how to determine what country conditions are good for billionaires or not
+
+Logistic: Could we predict whether the next billionaire would be self made?
+
+
+# Data Cleaning and exploration
+
+## dropping columns that are duplicates
+```{r}
+billionaires_clean <- billionaires %>% select(-c(latitude_country, longitude_country, birthDate, date, category))
+```
+
+questionable variables include source/organization (too spread out, no reason to use it in regression), residenceStateRegion (similar reasons), rank(can be extrapolated from finalWorth), title (hard to create categories, but possible)
+
+## variable transformations!
+
+industries to factor
+```{r}
+billionaires_clean %>% mutate(industries=as.factor(industries))
+```
+
+finalWorth log transformation
+
+```{r}
+billionaires_clean <- mutate(billionaires_clean, log_worth=log(finalWorth/100))
+```
+```{r}
+summary(billionaires_clean$log_worth)
+```
+
+
+## removing some nulls
+
+```{r}
+billionaires_no_nulls <- billionaires_clean %>% drop_na()
+billionaires_no_nulls
+```
+Lose 243 rows here - as far as I can tell, these are mostly either missing birthdates or missing country statistics 
+
+```{r}
+billionaires_columns <- colnames(billionaires_clean)
+billionaires_columns <- billionaires_columns[- c(19, 20, 21)] #birthdate columns
+billionaires_no_nulls <- billionaires_clean %>% drop_na(billionaires_columns)
+billionaires_no_nulls
+```
+This only retains 10 additional rows, but still useful and can be cleaned more later
+
+# country stats dataframe + cleaning
+
+```{r}
+colnames(billionaires_clean)
+```
+
+```{r}
+billionaires_by_country <- billionaires_clean %>%
+  group_by(country) %>%
+  summarize(
+    count = n(),
+    cpi_country = first(cpi_country),
+    cpi_change_country = first(cpi_change_country),
+    gdp_country = first(gdp_country),
+    gross_tertiary_education_enrollment = first(gross_tertiary_education_enrollment),
+    gross_primary_education_enrollment_country = first(gross_primary_education_enrollment_country),
+    life_expectancy_country = first(life_expectancy_country),
+    tax_revenue_country_country = first(tax_revenue_country_country),
+    total_tax_rate_country = first(total_tax_rate_country),
+    population_country = first(population_country),
+  )
+billionaires_by_country
+```
+```{r}
+countries_no_nulls <- billionaires_by_country %>% drop_na()
+countries_no_nulls
+```
+```{r}
+countries_w_nulls <- anti_join(billionaires_by_country, countries_no_nulls, by = "country")
+countries_w_nulls
+```
+
+
+So if we get rid of nulls we lose 15 countries - not ideal. I like the idea of replacing with the mean a little better, particularly important to handle Hong Kong / Taiwan and the 38 that have no country.
