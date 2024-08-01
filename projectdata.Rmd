@@ -39,6 +39,10 @@ industries to factor
 ```{r}
 billionaires_clean %>% mutate(industries=as.factor(industries))
 ```
+```{r}
+billionaires_clean <- billionaires_clean %>% mutate(gdp_country=as.numeric(gsub("[$,]", "", gdp_country)))
+billionaires_clean$gdp_country
+```
 
 finalWorth log transformation
 
