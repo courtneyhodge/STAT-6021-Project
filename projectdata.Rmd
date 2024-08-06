@@ -128,13 +128,16 @@ summary(aic)
 Use PCR for this
 ```{r}
 library(pls)
-pcareg<-pcr(count~., data=countries_no_nulls, scale=T)
+pcareg<-pcr(count~.-country, data=countries_no_nulls, scale=T)
 summary(pcareg)
 ```
 ```{r}
-new_dat <- countries_no_nulls[c(1,2,3,4,5,6,7,8,9,10),]
+new_dat <- countries_no_nulls[c(1,2,3,4,5,6,7,8,9,10,11,12),]
 new_dat
 predict(pcareg,new_dat, ncomp=3)
 predict(pcareg,new_dat, ncomp=10)
 ```
-
+```{r}
+countries_no_nulls$count
+```
+Quite honestly, this is pretty decent. Obviously the negative numbers are a bit of a problem, but the model seems to do quite well at predicting for countries with larger numbers of billionaires.
