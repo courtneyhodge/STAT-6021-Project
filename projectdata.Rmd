@@ -28,7 +28,7 @@ Logistic: Could we predict whether the next billionaire would be self made?
 
 ## dropping columns that are duplicates
 ```{r}
-billionaires_clean <- billionaires %>% select(-c(latitude_country, longitude_country, birthDate, date, category))
+billionaires_clean <- billionaires %>% select(-c(latitude_country, longitude_country, birthDate, birthYear, rank, date, category))
 ```
 
 questionable variables include source/organization (too spread out, no reason to use it in regression), residenceStateRegion (similar reasons), rank(can be extrapolated from finalWorth), title (hard to create categories, but possible)
@@ -41,7 +41,6 @@ billionaires_clean %>% mutate(industries=as.factor(industries))
 ```
 ```{r}
 billionaires_clean <- billionaires_clean %>% mutate(gdp_country=as.numeric(gsub("[$,]", "", gdp_country)))
-billionaires_clean$gdp_country
 ```
 
 finalWorth log transformation
@@ -51,6 +50,13 @@ billionaires_clean <- mutate(billionaires_clean, log_worth=log(finalWorth/100))
 ```
 ```{r}
 summary(billionaires_clean$log_worth)
+```
+```{r}
+billionaires_clean <- mutate(billionaires_clean, log_country_gdp = log(gdp_country), log_country_pop = log(population_country))
+```
+```{r}
+summary(billionaires_clean$log_country_gdp)
+summary(billionaires_clean$log_country_pop)
 ```
 
 
@@ -64,11 +70,16 @@ Lose 243 rows here - as far as I can tell, these are mostly either missing birth
 
 ```{r}
 billionaires_columns <- colnames(billionaires_clean)
-billionaires_columns <- billionaires_columns[- c(19, 20, 21)] #birthdate columns
-billionaires_no_nulls <- billionaires_clean %>% drop_na(billionaires_columns)
-billionaires_no_nulls
+billionaires_columns <- billionaires_columns[- c(18, 19)] #birthdate columns
+billionaires_only_bday_nulls <- billionaires_clean %>% drop_na(billionaires_columns)
+billionaires_only_bday_nulls
 ```
 This only retains 10 additional rows, but still useful and can be cleaned more later
+
+```{r}
+colnames(billionaires_clean)
+```
+
 
 # country stats dataframe + cleaning
 
@@ -90,6 +101,8 @@ billionaires_by_country <- billionaires_clean %>%
     tax_revenue_country_country = first(tax_revenue_country_country),
     total_tax_rate_country = first(total_tax_rate_country),
     population_country = first(population_country),
+    log_country_gdp = first(log_country_gdp),
+    log_country_pop = first(log_country_pop)
   )
 billionaires_by_country
 ```
@@ -104,3 +117,24 @@ countries_w_nulls
 
 
 So if we get rid of nulls we lose 15 countries - not ideal. I like the idea of replacing with the mean a little better, particularly important to handle Hong Kong / Taiwan and the 38 that have no country.
+
+Ignore below this (also - it may not work uh oh)
+```{r}
+model_bils <- lm(count~.-country, data=countries_no_nulls)
+summary(model_bils)
+aic <- MASS::stepAIC(model_bils, direction='both', Trace=F)
+summary(aic)
+```
+Use PCR for this
+```{r}
+library(pls)
+pcareg<-pcr(count~., data=countries_no_nulls, scale=T)
+summary(pcareg)
+```
+```{r}
+new_dat <- countries_no_nulls[c(1,2,3,4,5,6,7,8,9,10),]
+new_dat
+predict(pcareg,new_dat, ncomp=3)
+predict(pcareg,new_dat, ncomp=10)
+```
+
