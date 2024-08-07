@@ -1,0 +1,659 @@
+---
+title: "Project Logit"
+author: "Will Peritz"
+date: "2024-07-29"
+output: html_document
+---
+
+```{r}
+set.seed(999)
+library(tidyverse)
+library(caret)
+library(pROC)
+library(corrplot)
+library(car)
+library(glmnet)
+billionaires <- read.csv("/Users/williamperitz/Desktop/STAT6021/billionaires.csv")
+```
+
+# Data Cleaning and exploration
+
+### From existing data cleaning R file
+
+```{r}
+billionaires_clean <- billionaires %>% select(-c(latitude_country, longitude_country, birthDate, birthYear, rank, date, category))
+```
+
+```{r}
+billionaires_clean <- billionaires_clean %>% mutate(gdp_country=as.numeric(gsub("[$,]", "", gdp_country)))
+
+billionaires_clean <- mutate(billionaires_clean, log_worth=log(finalWorth/100))
+
+billionaires_clean <- mutate(billionaires_clean, log_country_gdp = log(gdp_country), log_country_pop = log(population_country))
+```
+
+```{r}
+billionaires_no_nulls <- billionaires_clean %>% drop_na()
+```
+
+```{r}
+billionaires_columns <- colnames(billionaires_clean)
+billionaires_columns <- billionaires_columns[- c(18, 19)] #birthdate columns
+billionaires_only_bday_nulls <- billionaires_clean %>% drop_na(billionaires_columns)
+```
+
+```{r}
+billionaires_by_country <- billionaires_clean %>%
+  group_by(country) %>%
+  summarize(
+    count = n(),
+    cpi_country = first(cpi_country),
+    cpi_change_country = first(cpi_change_country),
+    gdp_country = first(gdp_country),
+    gross_tertiary_education_enrollment = first(gross_tertiary_education_enrollment),
+    gross_primary_education_enrollment_country = first(gross_primary_education_enrollment_country),
+    life_expectancy_country = first(life_expectancy_country),
+    tax_revenue_country_country = first(tax_revenue_country_country),
+    total_tax_rate_country = first(total_tax_rate_country),
+    population_country = first(population_country),
+    log_country_gdp = first(log_country_gdp),
+    log_country_pop = first(log_country_pop)
+  )
+```
+
+```{r}
+countries_no_nulls <- billionaires_by_country %>% drop_na()
+
+countries_w_nulls <- anti_join(billionaires_by_country, countries_no_nulls, by = "country")
+
+dat_logit = billionaires_only_bday_nulls
+```
+
+
+# Start of New Work- Logistic Regression
+
+
+### ideas:
+split into self made and non self made. predict with age as response. whatever predictors possible. tech vs. non-tech, final worth, country, etc.
+
+### Data Processing and further cleaning
+```{r}
+# Creating binary response varible 'older'
+median_age <- median(dat_logit$age, na.rm = TRUE)
+dat_logit$older <- ifelse(dat_logit$age >= median_age, 'older', 'younger')
+dat_logit$older <- factor(dat_logit$older, levels = c('younger', 'older'))
+dat_logit <- subset(dat_logit, select = -c(age, birthDay, birthMonth, lastName, firstName))
+```
+
+### EDA
+```{r}
+# Select only numeric columns and include 'older'
+numeric_vars <- names(dat_logit)[sapply(dat_logit, is.numeric)]
+numeric_vars <- numeric_vars[numeric_vars != "older"]  # Exclude 'older'
+
+dat_long <- pivot_longer(dat_logit, cols = numeric_vars, names_to = "variable", values_to = "value")
+
+ggplot(dat_long, aes(x = older, y = value)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free_y") +
+  labs(title = "Box Plot Matrix of Numeric Variables by 'older'",
+       x = "Older",
+       y = "Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Seeing the results of this box plot matrix, all of the numeric variables look at least different enough to try in the model**
+
+```{r}
+# Check for multicollinearity
+cor(dat_logit %>% select_if(is.numeric), use = "pairwise.complete.obs")
+```
+
+**cpi_country and cpi_change_country seem to have multicollinearity with a few other variables. Also a few of the country-related variables correlate with each other, such as GDP and tax revenue, which makes sense. We will proceed with all the predictors for now and keep this in mind.**
+
+
+```{r}
+# US and China make up just over half of the world's billionaires
+table(dat_logit$country)
+dat_logit$is_not_us_ch <- ifelse(dat_logit$country %in% c("United States", "China"), F, T)
+```
+
+```{r}
+industry_counts <- dat_logit %>%
+  count(industries) %>%
+  arrange(desc(n)) %>%
+  mutate(industries = factor(industries, levels = industries))
+
+ggplot(industry_counts, aes(x = industries, y = n)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Bar Plot of Industries (Most to Least Frequent)", x = "Industries", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+table(dat_logit$industries)
+```
+Many billionaires are in the finance and tech industries. We can investigate to see if there is a difference in age.
+
+```{r}
+dat_logit$is_not_fin_tech <- ifelse(dat_logit$industries %in% c("Finance & Investments", "Technology"), F, T)
+```
+
+
+```{r}
+dat_logit <- dat_logit %>%
+  mutate(
+    gender = as.character(gender),
+    is_not_us_ch = as.character(is_not_us_ch),
+    is_not_fin_tech = as.character(is_not_fin_tech)
+  )
+
+plot_data <- dat_logit %>%
+  select(older, gender, is_not_us_ch, is_not_fin_tech) %>%
+  pivot_longer(cols = c(gender, is_not_us_ch, is_not_fin_tech), names_to = "variable", values_to = "value")
+
+ggplot(plot_data, aes(x = value, fill = older)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(title = "Stacked Bar Plot Matrix", x = "Category", y = "Proportion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**There seem to be enough differences to put these predictors in the model**
+
+```{r}
+# Split data into self made and non self made sets
+sm_logit = dat_logit[dat_logit$selfMade == TRUE,]
+row.names(sm_logit) = NULL
+
+nsm_logit = dat_logit[dat_logit$selfMade == FALSE,]
+row.names(nsm_logit) = NULL
+```
+
+## Making the models
+
+```{r}
+# Making our first model, we will start with all the predictors (excluding log transformations)
+sm_logit_model = glm(older~gender+is_not_fin_tech+is_not_us_ch+
+                       finalWorth+cpi_country+cpi_change_country+
+                       gdp_country+gross_tertiary_education_enrollment+
+                       gross_primary_education_enrollment_country+
+                       life_expectancy_country+tax_revenue_country_country+
+                       total_tax_rate_country+population_country,
+                       
+                       data = sm_logit,
+                       family='binomial')
+
+summary(sm_logit_model)
+```
+
+**Based on these results, we can remove a couple predictors and substitute the log versions of others to see if it helps**
+
+### Second Model
+
+```{r}
+# Making our second model, we will cut some predictors and use log versions of others if appropriate
+sm_logit_model2 = glm(older~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                       gdp_country+gross_tertiary_education_enrollment+
+                       life_expectancy_country+tax_revenue_country_country+
+                       total_tax_rate_country+population_country,
+                       
+                       data = sm_logit,
+                       family='binomial')
+
+summary(sm_logit_model2)
+```
+
+**AIC decreased, we can check vif to see which predictor to drop**
+
+```{r}
+vif(sm_logit_model2)
+```
+
+### Third Model
+**This model appears to remove multiple predictors at once but is in fact the result of several individual evaluations, removing one predictor at a time until all p-values are < 0.05**
+
+```{r}
+# Making our third model, we can drop gdp_country and see if it helps
+sm_logit_model3 = glm(older~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                
+                       tax_revenue_country_country+
+                       total_tax_rate_country,
+                       
+                       data = sm_logit,
+                       family='binomial')
+
+summary(sm_logit_model3)
+```
+
+
+```{r}
+vif(sm_logit_model3)
+```
+
+**All VIF values are below 10, so we can say that multicollinearity is not an issue with this model. Based on our knowledge of the data, we can also say that it meets the independence assumption. This is the best model so far, all things considered (also ends up being very clsoe to one the we stick with in the end)**
+
+
+### AUC and ROC 
+
+```{r}
+ctrl <- trainControl(method = 'cv', 
+                     number = 10, 
+                     summaryFunction = twoClassSummary, 
+                     classProbs = TRUE, 
+                     savePredictions = TRUE)
+
+# Use the same predictors from model3
+pred_model <- train(older~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                       tax_revenue_country_country+
+                       total_tax_rate_country,
+                   data = sm_logit, 
+                   method = 'glm', 
+                   family = 'binomial',  
+                   trControl = ctrl, 
+                   metric = 'ROC')
+```
+
+
+```{r}
+predictions = pred_model$pred
+# AUC
+sm_roc = roc(predictions$obs,  predictions$younger)
+# ROC
+roc_dat = data.frame(TPR=sm_roc$sensitivities, FPR = (1 - sm_roc$specificities))
+sm_roc
+```
+
+
+```{r}
+ggplot(roc_dat, aes(x=FPR, y=TPR)) +geom_line(color='red')
+```
+
+
+### Shrinkage Methods: Lasso to see if model improves
+
+```{r}
+sm_logit$older_binary <- as.numeric(sm_logit$older == "older")
+```
+
+
+```{r}
+sm_preds <- model.matrix(older_binary~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                       tax_revenue_country_country+
+                       total_tax_rate_country,
+                             data = sm_logit)[, -1]
+
+response <- sm_logit$older_binary
+```
+
+```{r}
+X <- as.matrix(sm_preds)
+y <- as.numeric(response)
+```
+
+```{r}
+# Lasso model
+lmodel <- glmnet(x = X, y = y, alpha = 1)
+plot(lmodel, label = TRUE, xvar = 'lambda')
+```
+
+
+```{r}
+kcvglmnet <- cv.glmnet(x = X, y = y, alpha = 1, nfolds = 3)
+
+print(kcvglmnet$lambda.min)
+print(kcvglmnet$lambda.1se) 
+```
+
+```{r}
+plot(lmodel, label = TRUE, xvar = 'lambda')
+abline(v = log(kcvglmnet$lambda.1se), col = 'red', lty = 2)
+```
+```{r}
+predict(lmodel, type = 'coefficient', s= kcvglmnet$lambda.1se, newx = X[1:2,])
+```
+
+**At the ideal value of lambda, Lasso regression appears to keep 6 predictors**
+
+### New model with these predictors only
+
+
+```{r}
+sm_logit_model3_lasso = glm(older~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                       tax_revenue_country_country+
+                       total_tax_rate_country,
+                       
+                       data = sm_logit,
+                       family='binomial')
+
+summary(sm_logit_model3_lasso)
+```
+### AIC is ok, Trying AUC and ROC
+```{r}
+pred_model3_lasso <- train(older~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                       tax_revenue_country_country+
+                       total_tax_rate_country,
+                       
+                   data = sm_logit, 
+                   method = 'glm', 
+                   family = 'binomial',  
+                   trControl = ctrl, 
+                   metric = 'ROC')
+```
+
+```{r}
+predictions = pred_model3_lasso$pred
+# AUC
+sm_roc = roc(predictions$obs,  predictions$younger)
+# ROC
+roc_dat = data.frame(TPR=sm_roc$sensitivities, FPR = (1 - sm_roc$specificities))
+sm_roc
+```
+```{r}
+ggplot(roc_dat, aes(x=FPR, y=TPR)) +geom_line(color='red')
+```
+
+```{r}
+vif(sm_logit_model3_lasso)
+```
+
+**Marginally better than model3, we will keep this model**
+
+
+
+### Shrinkage Methods: Ridge (just to see if it helps)
+
+```{r}
+# Ridge model
+rmodel = glmnet(x = X, y = y, alpha = 0)
+plot(rmodel, label = TRUE, xvar = 'lambda')
+```
+
+```{r}
+kcvglmnet2 <- cv.glmnet(x = X, y = y, alpha = 0, nfolds = 3)
+
+print(kcvglmnet2$lambda.min)
+print(kcvglmnet2$lambda.1se) 
+```
+
+```{r}
+plot(rmodel, label = TRUE, xvar = 'lambda')
+abline(v = log(kcvglmnet2$lambda.1se), col = 'red', lty = 2)
+```
+**Not much different from Lasso**
+
+```{r}
+predict(rmodel, type = 'coefficient', s= kcvglmnet2$lambda.1se, newx = X[1:2,])
+```
+
+
+## Selected Model- Interpretation and Prediction
+
+
+
+
+```{r}
+# exponentiated coefficients of the model
+exp(coef(sm_logit_model3_lasso))
+```
+
+For the variable 'log_worth' in this model: 
+
+- For every one 1 point increase in log_worth, the odds of a self-made financial/technology billionaire being older increases by 26.3% for billionaires in the US or China, compared to billionaires in other countries, holding all other variables constant
+
+- A self-made non financial/technology billionaire being in any country besides China or the US increases their odds of being older 1586%
+
+
+
+```{r}
+# model predicts Mark Cuban correctly 
+mark_cuban<-sm_logit[592,c(29,28,24,15,16,21,22)]
+
+predict(sm_logit_model3, mark_cuban, type="response")
+```
+
+```{r}
+model3_pred = train(older~is_not_fin_tech+is_not_us_ch+
+                       log_worth+cpi_country+cpi_change_country+
+                       tax_revenue_country_country+
+                       total_tax_rate_country,
+                    
+              data=sm_logit, method = 'glm', 
+              family= 'binomial', 
+              trControl = ctrl,
+              metric = 'ROC')
+
+predictions = model3_pred$pred
+table(predictions$pred, predictions$obs)
+```
+
+```{r}
+
+
+accuracy <- (665 + 499) / 1693
+tpr <- 665 / (665 + 230)
+tnr <- 499 / (499+299)
+fpr <-229 / (499 + 299)
+fnr <- 230 / (665+230)
+
+
+cat("Accuracy:", round(accuracy, 3), "\n")
+cat("True Positive Rate (TPR):", round(tpr, 3), "\n")
+cat("True Negative Rate (TNR):", round(tnr, 3), "\n")
+cat("False Positive Rate (FPR):", round(fpr, 3), "\n")
+cat("False Negative Rate (FNR):", round(fnr, 3), "\n")
+```
+
+
+# BONUS MODEL: Non Self Made
+**We start with the same predictors as we started with for the self-made billionaires, and eliminate predctors one at a time by p-value and vif score until we reach the following model:**
+
+```{r}
+# First nsm model, building off the selected sm model
+nsm_logit_model = glm(older~gender+is_not_fin_tech+
+                       finalWorth+
+                       total_tax_rate_country+population_country,
+                       
+                       data = nsm_logit,
+                       family='binomial')
+
+
+summary(nsm_logit_model)
+```
+
+```{r}
+vif(nsm_logit_model)
+```
+
+```{r}
+pred_model <- train(older~gender+is_not_fin_tech+
+                       finalWorth+
+                       total_tax_rate_country+population_country,
+                    
+                   data = nsm_logit, 
+                   method = 'glm', 
+                   family = 'binomial',  
+                   trControl = ctrl, 
+                   metric = 'ROC')
+```
+
+
+```{r}
+predictions = pred_model$pred
+# AUC
+sm_roc = roc(predictions$obs,  predictions$younger)
+# ROC
+roc_dat = data.frame(TPR=sm_roc$sensitivities, FPR = (1 - sm_roc$specificities))
+sm_roc
+```
+
+
+```{r}
+ggplot(roc_dat, aes(x=FPR, y=TPR)) +geom_line(color='red')
+```
+
+### Shrinkage Methods for nsm: Lasso to see if model improves
+
+```{r}
+nsm_logit$older_binary <- as.numeric(nsm_logit$older == "older")
+```
+
+
+```{r}
+nsm_preds <- model.matrix(older_binary~gender+
+                       is_not_fin_tech+
+                       finalWorth+
+                       total_tax_rate_country+population_country,
+                       
+                             data = nsm_logit)[, -1]
+
+response <- nsm_logit$older_binary
+```
+
+```{r}
+X <- as.matrix(nsm_preds)
+y <- as.numeric(response)
+```
+
+```{r}
+# Lasso model
+lmodel <- glmnet(x = X, y = y, alpha = 1)
+plot(lmodel, label = TRUE, xvar = 'lambda')
+```
+
+```{r}
+kcvglmnet3 <- cv.glmnet(x = X, y = y, alpha = 1, nfolds = 3)
+
+print(kcvglmnet3$lambda.min)
+print(kcvglmnet3$lambda.1se) 
+```
+
+```{r}
+plot(lmodel, label = TRUE, xvar = 'lambda')
+abline(v = log(kcvglmnet3$lambda.1se), col = 'red', lty = 2)
+```
+
+```{r}
+predict(lmodel, type = 'coefficient', s= kcvglmnet3$lambda.1se, newx = X[1:2,])
+```
+
+**Lasso keeps the predictors we already had when evaluated at our best lambda value**
+
+```{r}
+## Predictions
+new<-nsm_logit[10:14,c(1,11,29,22,23)]
+
+predict(nsm_logit_model, new, type="response")
+```
+
+```{r}
+nsm_model_pred = train(older~gender+
+                       is_not_fin_tech+
+                       finalWorth+
+                       total_tax_rate_country+population_country,
+                       
+                       data=nsm_logit, method = 'glm', family= 'binomial', trControl = ctrl,
+               metric = 'ROC')
+
+
+# Extract predicted probabilities from the model
+predicted_probs <- predict(nsm_model_pred, newdata = nsm_logit, type = 'prob')
+
+# Create a data frame with the predicted probabilities
+nsm_logit_with_probs <- nsm_logit %>%
+  mutate(prob = predicted_probs$older, # Assuming 'older' is the positive class
+         classify = ifelse(prob > 0.56, "older", "younger"))
+
+# Ensure that the confusion matrix has the correct class order for alignment
+conf_matrix <- table(Predicted = factor(nsm_logit_with_probs$classify, levels = c("younger", "older")),
+                     Actual = factor(nsm_logit_with_probs$older, levels = c("younger", "older")))
+
+print(conf_matrix)
+```
+
+```{r}
+# Calculate performance metrics
+true_positive <- conf_matrix["older", "older"]
+false_negative <- conf_matrix["younger", "older"]
+true_negative <- conf_matrix["younger", "younger"]
+false_positive <- conf_matrix["older", "younger"]
+total <- sum(conf_matrix)
+
+accuracy <- (true_positive + true_negative) / total
+tpr <- true_positive / (true_positive + false_negative)
+tnr <- true_negative / (true_negative + false_positive)
+fpr <- false_positive / (true_negative + false_positive)
+fnr <- false_negative / (true_positive + false_negative)
+
+# Print results
+cat("Accuracy:", round(accuracy, 3), "\n")
+cat("True Positive Rate (TPR):", round(tpr, 3), "\n")
+cat("True Negative Rate (TNR):", round(tnr, 3), "\n")
+cat("False Positive Rate (FPR):", round(fpr, 3), "\n")
+cat("False Negative Rate (FNR):", round(fnr, 3), "\n")
+```
+
+
+
+```{r}
+
+# Define the confusion matrix values
+true_positive <- 86
+false_negative <- 209
+true_negative <- 339
+false_positive <- 80
+total <- 714
+
+# Calculate metrics
+accuracy <- (true_positive + true_negative) / total
+tpr <- true_positive / (true_positive + false_negative)
+tnr <- true_negative / (true_negative + false_positive)
+fpr <- false_positive / (true_negative + false_positive)
+fnr <- false_negative / (true_positive + false_negative)
+
+# Print results
+cat("Accuracy:", round(accuracy, 3), "\n")
+cat("True Positive Rate (TPR):", round(tpr, 3), "\n")
+cat("True Negative Rate (TNR):", round(tnr, 3), "\n")
+cat("False Positive Rate (FPR):", round(fpr, 3), "\n")
+cat("False Negative Rate (FNR):", round(fnr, 3), "\n")
+
+```
+
+```{r}
+# model predicts Trudy Cathy White correctly 
+trudy_cathy_white<-sm_logit[126,c(1,11,29,22,23)]
+
+predict(nsm_logit_model, trudy_cathy_white, type="response")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
