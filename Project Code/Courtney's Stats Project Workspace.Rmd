@@ -1,0 +1,422 @@
+---
+title: "Stats Project Workspace"
+author: "Courtney Hodge"
+date: "2024-07-29"
+output: html_document
+---
+
+> Charlie's Data Cleaning is below
+
+---
+
+```{r}
+
+
+library(tidyverse)
+
+
+billionaires <- read.csv("C:\\Users\\hodge\\Desktop\\UVA_Coding_Folder\\Statistics-6021\\(original) Billionaires Statistics Dataset.csv")
+```
+Don't really know how to do EDA / transformations in R tbh
+```{r}
+summary(billionaires)
+```
+Thoughts: drop country latitude/longitude, birthYear, birthMonth, birthDay, date, either industry or category (they are the same) and recode as a categorical instead of a variable, rank (rank is unhelpful and can be extrapolated from finalWorth), drop either source or organization.
+
+Other things can be done later, but these all seem useless. If doing some work on countries, USA will probably skew it, so I'm not sure how useful country info will be in any case.
+
+Thoughts: 
+
+MLR: how to determine what country conditions are good for billionaires or not
+
+Logistic: Could we predict whether the next billionaire would be self made?
+
+
+ Data Cleaning and exploration
+
+ dropping columns that are duplicates
+```{r}
+billionaires_clean <- billionaires %>% select(-c(latitude_country, longitude_country, birthDate, birthYear, rank, date, category))
+```
+
+questionable variables include source/organization (too spread out, no reason to use it in regression), residenceStateRegion (similar reasons), rank(can be extrapolated from finalWorth), title (hard to create categories, but possible)
+
+ variable transformations!
+
+industries to factor
+```{r}
+billionaires_clean %>% mutate(industries=as.factor(industries))
+```
+```{r}
+billionaires_clean <- billionaires_clean %>% mutate(gdp_country=as.numeric(gsub("[$,]", "", gdp_country)))
+```
+
+finalWorth log transformation
+
+```{r}
+billionaires_clean <- mutate(billionaires_clean, log_worth=log(finalWorth/100))
+```
+```{r}
+summary(billionaires_clean$log_worth)
+```
+```{r}
+billionaires_clean <- mutate(billionaires_clean, log_country_gdp = log(gdp_country), log_country_pop = log(population_country))
+```
+```{r}
+summary(billionaires_clean$log_country_gdp)
+summary(billionaires_clean$log_country_pop)
+```
+
+
+ removing some nulls
+
+```{r}
+billionaires_no_nulls <- billionaires_clean %>% drop_na()
+billionaires_no_nulls
+```
+Lose 243 rows here - as far as I can tell, these are mostly either missing birthdates or missing country statistics 
+
+```{r}
+billionaires_columns <- colnames(billionaires_clean)
+billionaires_columns <- billionaires_columns[- c(18, 19)] #birthdate columns
+billionaires_only_bday_nulls <- billionaires_clean %>% drop_na(billionaires_columns)
+billionaires_only_bday_nulls
+```
+This only retains 10 additional rows, but still useful and can be cleaned more later
+
+```{r}
+colnames(billionaires_clean)
+```
+
+
+country stats dataframe + cleaning
+
+```{r}
+colnames(billionaires_clean)
+```
+
+```{r}
+billionaires_by_country <- billionaires_clean %>%
+  group_by(country) %>%
+  summarize(
+    count = n(),
+    cpi_country = first(cpi_country),
+    cpi_change_country = first(cpi_change_country),
+    gdp_country = first(gdp_country),
+    gross_tertiary_education_enrollment = first(gross_tertiary_education_enrollment),
+    gross_primary_education_enrollment_country = first(gross_primary_education_enrollment_country),
+    life_expectancy_country = first(life_expectancy_country),
+    tax_revenue_country_country = first(tax_revenue_country_country),
+    total_tax_rate_country = first(total_tax_rate_country),
+    population_country = first(population_country),
+    log_country_gdp = first(log_country_gdp),
+    log_country_pop = first(log_country_pop)
+  )
+billionaires_by_country
+```
+```{r}
+countries_no_nulls <- billionaires_by_country %>% drop_na()
+countries_no_nulls
+```
+```{r}
+countries_w_nulls <- anti_join(billionaires_by_country, countries_no_nulls, by = "country")
+countries_w_nulls
+```
+
+
+So if we get rid of nulls we lose 15 countries - not ideal. I like the idea of replacing with the mean a little better, particularly important to handle Hong Kong / Taiwan and the 38 that have no country.
+
+Ignore below this (also - it may not work uh oh)
+```{r}
+model_bils <- lm(count~.-country, data=countries_no_nulls)
+summary(model_bils)
+aic <- MASS::stepAIC(model_bils, direction='both', Trace=F)
+summary(aic)
+```
+Use PCR for this
+```{r}
+library(pls)
+pcareg<-pcr(count~.-country, data=countries_no_nulls, scale=T)
+summary(pcareg)
+```
+```{r}
+new_dat <- countries_no_nulls[c(1,2,3,4,5,6,7,8,9,10,11,12),]
+new_dat
+predict(pcareg,new_dat, ncomp=3)
+predict(pcareg,new_dat, ncomp=10)
+```
+```{r}
+countries_no_nulls$count
+```
+
+---
+
+Here, I'm working on the assumption that Charlie's billionaires_no_nulls is our clean df. Thank you Charlie!
+```{r}
+#changing name for easier analysis
+df <- billionaires_no_nulls
+```
+
+## Q1 How does the level of education in a country (primary) correlate with the number of billionaires per capita?
+
+```{r}
+#calculating billionares per country
+billionaire_density <- df |> 
+  group_by(country) |> 
+  summarize(
+    num_of_billionaires = n(), 
+    population = mean(population_country),
+    primary_education = mean(gross_primary_education_enrollment_country),
+    tertiary_education = mean(gross_tertiary_education_enrollment),
+    gdp_per_capita = mean(gdp_country)
+  ) |> 
+  mutate(billionares_per_million = (num_of_billionaires / population) * 1e6) #1 million
+
+
+```
+
+```{r}
+#scatter plot for primary enrollment vs billionaire density
+ggplot(billionaire_density, aes(x = primary_education, y = billionares_per_million)) + 
+  geom_point(color = "blue") + 
+  geom_smooth(method = "loess", se = FALSE, color = "red") + 
+  labs(
+    title = "Impact of Primary Education on Billionaire Density",
+    x = "Gross Primary Education Enrollment (%)",
+    y = "Billionaires per Million People",
+    size = "GDP per Capita",
+    color = "Tertiary Education Enrollment"
+  )
+```
+
+* Overall, we can see that countries with very high and very low primary education levels produce the fewest number of billionaires by the million. Countries generally around a primary education enrollment percentage of 100 tend to have more billionaires.
+
+## Q2: How do economic indicators such as GDP and CPI correlate with the average wealth of billionaires in different countries?
+
+```{r}
+# Calculate average wealth per country
+avg_wealth_country <- df %>%
+  group_by(country) %>%
+  summarise(
+    average_wealth = mean(finalWorth),
+    gdp = mean(gdp_country),
+    cpi = mean(cpi_change_country),
+    population = mean(population_country)
+  )
+
+```
+
+
+```{r}
+ggplot(avg_wealth_country, aes(x = gdp/1e12, y = average_wealth/1000, color = cpi)) + 
+  geom_point(alpha = 0.5, size = 3) +
+  scale_y_continuous(labels = scales::dollar_format(prefix = "$", suffix = "B")) +
+  labs(
+    title = "GDP vs Average Billionaire Wealth",
+    x = "GDP (Billion USD)",
+    y = "Average Net Worth (Billion USD)",
+    size = "CPI Change"
+  ) + 
+  scale_color_gradient(low = "blue", high = "red")
+```
+
+
+```{r}
+ggplot(avg_wealth_country, aes(x = gdp/1e12, y = average_wealth/1000, color = cpi)) + 
+  geom_point(alpha = 0.5, size = 3) +
+  scale_x_log10(labels = scales::comma_format(scale = 1, suffix = "B"))  + 
+  scale_y_log10(labels = scales::dollar_format(prefix = "$", suffix = "B")) +
+  #scale_y_continuous(labels = scales::dollar_format(prefix = "$", suffix = "B")) +
+  labs(
+    title = "GDP vs Average Billionaire Wealth",
+    x = "GDP (Billion USD)",
+    y = "Average Net Worth (Billion USD)",
+    size = "CPI Change"
+  ) + 
+  scale_color_gradient(low = "blue", high = "red")
+```
+
+
+
+* kinda hard to interpret what's going on here without a color scale for country, but we see that higher gdp and lower inflation rates (CPI change) might be associated with more substantial billionaire wealth due to stable economic conditions.
+
+## Q3: How might a country's life expectancy impact its average age of billionaires?
+
+```{r}
+age_life_expectancy <- df  |> 
+  group_by(country) |> 
+  summarise(
+    average_age = mean(age),
+    life_expectancy = mean(life_expectancy_country),
+    number_of_billionaires = n()
+  )
+```
+
+```{r}
+ggplot(age_life_expectancy, aes(x = life_expectancy, y = average_age, size = number_of_billionaires)) +
+  geom_point(alpha = 0.7, size = 5, color = "blue") +
+  labs(
+    title = "Correlation between Life Expectancy and Average Billionaire Age",
+    x = "Life Expectancy (Years)",
+    y = "Average Age of Billionaires",
+    size = "Number of Billionaires"
+  )
+```
+
+## Q4: How does life expectancy in a country correlate with the average net worth of its billionaires?
+
+```{r}
+wealth_life_expectancy <- df %>%
+  group_by(country) %>%
+  summarise(
+    average_wealth = mean(finalWorth),
+    life_expectancy = mean(life_expectancy_country)
+  )
+```
+
+```{r}
+ggplot(wealth_life_expectancy, aes(x = life_expectancy, y = average_wealth /1000)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  scale_y_continuous(labels = scales::dollar_format(prefix = "$", suffix = "B")) +
+  labs(
+    title = "Life Expectancy vs Average Billionaire Wealth by Country",
+    x = "Life Expectancy (Years)",
+    y = "Average Net Worth (Billion USD)"
+  )
+```
+
+## Q5: How does the Consumer Price Index (CPI) influence the types of industries that are most prevalent among billionaires in different countries?
+
+```{r}
+#identify top 10 countries
+top_countries <- df %>%
+  group_by(country) %>%
+  summarise(total_billionaires = n()) %>%
+  arrange(desc(total_billionaires)) %>%
+  slice(1:10) %>%  # Select the top 10 countries
+  pull(country)
+
+#determine top 3 industries based on # of billionaires?
+industry_cpi <- df %>%
+  filter(country %in% top_countries) |> 
+  group_by(country, industries) %>%
+  summarise(
+    cpi = mean(cpi_country),
+    num_billionaires = n()
+  )
+```
+
+```{r}
+ggplot(industry_cpi, aes(x = reorder(country, -cpi), y = num_billionaires, fill = industries)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    title = "Industry Distribution vs CPI by Country",
+    x = "Country",
+    y = "Number of Billionaires",
+    fill = "Industry"
+  )
+```
+> what are the top 5 industry producing billionaires?
+
+
+
+
+## Q: What is the top billionaire producing industry in the world and what are the age distribution's of billionaires in this industry based on the top 10 billionaire producing countires?
+
+
+```{r}
+
+
+top_industries <- df %>%
+  group_by(industries) %>%
+  summarise(num_billionaires = n()) %>%
+  arrange(desc(num_billionaires)) %>%
+  head(5)
+
+
+ggplot(top_industries, aes(x = industries, y = num_billionaires, fill = industries)) +
+  geom_bar(stat = "identity") + 
+  labs(
+    title = "Top 5 Billionaire-Producing Industries in the World", 
+    x = "Industry",
+    y = "Number of Billionaires", 
+  )  +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Rotate x-axis labels for better readability
+    plot.title = element_text(hjust = 0.5, size = 28, face = "bold"), # Increase title size
+    axis.title.x = element_text(size = 18, face = "bold"), # Increase x-axis title size
+    axis.title.y = element_text(size = 18, face = "bold"), # Increase y-axis title size
+    axis.text = element_text(size = 12) # Increase axis text size
+  )+
+  scale_fill_brewer(palette = "BuGn")
+```
+
+```{r}
+#identify top 10 countries
+top_countries <- df %>%
+  group_by(country) %>%
+  summarise(num_billionaires = n()) %>%
+  arrange(desc(num_billionaires)) %>%
+  top_n(10, num_billionaires)
+
+ggplot(top_countries, aes(x = country, y = num_billionaires, fill = country)) +
+  geom_bar(stat = "identity") + 
+  labs(
+    title = "Top 10 Billionaire Producing Countries",
+    x = "Country",
+    y = "Number of Billionaires"
+  ) + theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Rotate x-axis labels for better readability
+    plot.title = element_text(hjust = 0.5, size = 28, face = "bold"), # Increase title size
+    axis.title.x = element_text(size = 18, face = "bold"), # Increase x-axis title size
+    axis.title.y = element_text(size = 18, face = "bold"), # Increase y-axis title size
+    axis.text = element_text(size = 12) # Increase axis text size
+  )+
+  scale_fill_brewer(palette = "Paired")
+```
+
+
+```{r}
+
+top_countries <- df %>%
+  group_by(country) %>%
+  summarise(num_billionaires = n()) %>%
+  arrange(desc(num_billionaires)) %>%
+  head(10) %>%
+  pull(country)
+
+finance <- df |>  
+  filter(country %in% top_countries, industries == "Finance & Investments")
+  
+  
+ggplot(finance, aes(x = country, y = age)) + 
+  geom_boxplot(outlier.color = "red") +
+  geom_smooth(method = "loess", se = FALSE, color = "red") +
+  labs(
+    title = "Age Distribution of Billionaires in the Finance Industry",
+    subtitle = "Top 10 Billionaire-Producing Countries",
+    x = "Country",
+    y = "Age",
+    fill = "Country"
+  ) +
+  theme(
+    axis.title.x = element_text(size = 18, face = "bold"),
+    axis.title.y = element_text(size = 18, face = "bold"),
+    axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1), # Rotate country names for better readability
+    plot.title = element_text(size = 28, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 24, face = "italic", hjust = 0.5),
+    legend.position = "none"
+  ) 
+  
+```
+
+
+
+```{r}
+
+
+```
+
