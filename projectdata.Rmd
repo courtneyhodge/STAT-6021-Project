@@ -79,7 +79,9 @@ This only retains 10 additional rows, but still useful and can be cleaned more l
 ```{r}
 colnames(billionaires_clean)
 ```
-
+```{r}
+table(billionaires_only_bday_nulls$selfMade)
+```
 
 # country stats dataframe + cleaning
 
@@ -125,19 +127,111 @@ summary(model_bils)
 aic <- MASS::stepAIC(model_bils, direction='both', Trace=F)
 summary(aic)
 ```
+visualizations
+```{r}
+countries_no_nulls$gdp_per_capita = countries_no_nulls$gdp_country / countries_no_nulls$population_country
+ggplot(countries_no_nulls, aes(x=count, y=gdp_country))+geom_point()+geom_smooth(method='lm')
+```
+```{r}
+ggplot(countries_no_nulls, aes(x=count, y=gross_primary_education_enrollment_country))+geom_point()+geom_smooth(method='lm')
+```
+```{r}
+ggplot(countries_no_nulls, aes(x=count, y=total_tax_rate_country))+geom_point()+geom_smooth(method='lm')
+```
+
+
 Use PCR for this
 ```{r}
 library(pls)
 pcareg<-pcr(count~.-country, data=countries_no_nulls, scale=T)
 summary(pcareg)
 ```
+
 ```{r}
-new_dat <- countries_no_nulls[c(1,2,3,4,5,6,7,8,9,10,11,12),]
-new_dat
-predict(pcareg,new_dat, ncomp=3)
-predict(pcareg,new_dat, ncomp=10)
+countries2 <- countries_no_nulls[,-1]
+pca<-princomp(countries2, cor=T,fix_sign = T)
+summary(pca)
+pca_data<-data.frame(count=countries_no_nulls$count, pca$scores)
+pcareg2<-lm(count~Comp.1+Comp.2+Comp.3+Comp.4+Comp.5+Comp.6+Comp.7+Comp.8+Comp.9,data = pca_data)
+summary(pcareg2)
 ```
-```{r}
-countries_no_nulls$count
-```
+
 Quite honestly, this is pretty decent. Obviously the negative numbers are a bit of a problem, but the model seems to do quite well at predicting for countries with larger numbers of billionaires.
+
+Need to do cross validation + residual analysis
+Small enough dataset to do leave one out cross validation
+```{r}
+pcareg3<-pcr(count~.-country, data=countries_no_nulls,scale=TRUE)
+summary(pcareg3)
+cv<-pcr(count~.-country, data=countries_no_nulls,scale=TRUE,validation="LOO")
+validationplot(cv,val.type = "RMSEP")
+validationplot(cv,val.type = "MSEP")
+```
+Elbow point either at 3 6 or 10
+```{r}
+new_dat <- countries_no_nulls
+new_dat
+predictions3 = predict(pcareg3,new_dat, ncomp=3)
+predictions6 = predict(pcareg3,new_dat, ncomp=6)
+predictions10 = predict(pcareg3,new_dat, ncomp=10)
+# predictions3 <- ifelse(predictions3 < 0, 0, predictions3)
+# predictions7 <- ifelse(predictions7 < 0, 0, predictions7)
+# predictions9 <- ifelse(predictions9 < 0, 0, predictions9)
+library(Metrics)
+mae3 = mae(countries_no_nulls$count, predictions3)
+rmse3 = rmse(countries_no_nulls$count, predictions3)
+mae6 = mae(countries_no_nulls$count, predictions6)
+rmse6 = rmse(countries_no_nulls$count, predictions6)
+mae10 = mae(countries_no_nulls$count, predictions10)
+rmse10 = rmse(countries_no_nulls$count, predictions10)
+mae3
+rmse3
+mae6
+rmse6
+mae10
+rmse10
+```
+One more thought - how does model performance change if we eliminate certain outliers?
+
+```{r}
+# remove Argentina, Nigeria, Egypt b/c they have really high inflation and CPI
+countries4 = countries_no_nulls[-c(2,17,39),]
+countries4
+```
+```{r}
+pcareg4<-pcr(count~.-country, data=countries4,scale=TRUE)
+summary(pcareg4)
+cv<-pcr(count~.-country, data=countries4,scale=TRUE,validation="LOO")
+validationplot(cv,val.type = "RMSEP")
+validationplot(cv,val.type = "MSEP")
+```
+
+```{r}
+new_dat <- countries4
+new_dat
+predictions7 = predict(pcareg4,new_dat, ncomp=7)
+predictions10 = predict(pcareg4,new_dat, ncomp=10)
+mae7 = mae(countries4$count, predictions7)
+rmse7 = rmse(countries4$count, predictions7)
+mae10 = mae(countries4$count, predictions10)
+rmse10 = rmse(countries4$count, predictions10)
+mae7
+rmse7
+mae10
+rmse10
+```
+```{r}
+# table for visual presentation
+residuals <- countries4$count - predictions9
+residuals <- round(residuals)
+predictions9 <- round(predictions9)
+countries_df <- countries4[c(3, 5, 11, 12, 22, 26, 36, 43, 45, 46, 50, 51, 58, 59),c(1,2,3,5,10, 11)]
+countries_df$prediction <- predictions9[c(3, 5, 11, 12, 22, 26, 36, 43, 45, 46, 50, 51, 58, 59)]
+countries_df$residual <- residuals[c(3, 5, 11, 12, 22, 26, 36, 43, 45, 46, 50, 51, 58, 59)]
+countries_df <- countries_df[,c(1,2,7,8,3,4,5,6)]
+countries_df
+view(countries_df)
+```
+
+
+
