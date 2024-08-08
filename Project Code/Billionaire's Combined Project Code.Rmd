@@ -444,7 +444,11 @@ ggcorrplot(correlation, type='lower')
 ```{r}
 library(tidyverse)
 # set working directory
+<<<<<<< HEAD
 setwd('C:/Users/Valenty/VSCode/billionaires_finalproject')
+=======
+#setwd('C:/Users/Valenty/VSCode/billionaires_finalproject')
+>>>>>>> 9bae7f827456b468afed3bfb57b45e2caa30344a
 # read in original data set
 bill <- read.csv('data/Billionaires-Statistics.csv')
 # normalize column names with lowercase
