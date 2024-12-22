@@ -2,7 +2,7 @@
 This repository contains the files and resources for our statistics project on billionaire data analysis. Below is an overview of the folder structure and key files:
 
 ## Repository Contents
-1. **Original Data Set (Folder)**
+1. **Original Dataset (Folder)**
 - Contains the raw data used in this project.
 - This is the source data before any cleaning or manipulation.
 3. **Project Code (Folder)**
